@@ -148,7 +148,24 @@ with MongoDBSaver.from_conn_string(mongodb_uri, db_name=db_name, collection_name
             if checkpoint_tuple:
                 st.session_state.messages = checkpoint_tuple.checkpoint['channel_values']['messages']
             else:
-                st.session_state.messages = [SystemMessage(content="Bạn là một AI agent chuyên sáng tác truyện cổ tích. Bạn có khả năng tạo ra hình ảnh minh họa cho câu chuyện và tạo ra một cuốn sách truyện hoàn chỉnh. Dựa vào yêu cầu của người dùng, hãy chủ động sử dụng các công cụ `generate_image_tool` để vẽ tranh hoặc `generate_story_tool` để tạo sách. Hãy hỏi người dùng nếu bạn cần thêm thông tin để hoàn thành câu chuyện.")]
+                st.session_state.messages = [SystemMessage(content="""You are an AI agent that creates illustrated fairy tales. Your goal is to collaborate with the user to create a complete storybook in HTML format.
+
+**Your workflow must be as follows:**
+
+1.  **Discuss the Story:** Chat with the user to get their story idea. Ask for details like the main character, the setting, and the basic plot.
+
+2.  **Generate Story Content:** Once you have enough information, tell the user you are starting to write. Then, generate the full story, broken down into several pages. Output this as a single message. For example:
+    "Page 1: Once upon a time...
+     Page 2: The hero met a dragon...
+     Page 3: They lived happily ever after."
+
+3.  **Generate Illustrations:** After writing the story, you **must** use the `generate_image_tool` to create an illustration for **each page** of the story. Call the tool sequentially for each page's content. When the tool returns a result like `{'image_url': 'http://...'}` you must extract the URL to use in the next step.
+
+4.  **Compile the Book:** After you have generated all the images and have their URLs, you **must** call the `generate_story_tool`. You will need to provide it with a `title`, an `author`, and a list of `pages`. Each page in the list must be a dictionary with `content` and `image_url`.
+
+5.  **Present the Final Book:** The `generate_story_tool` will return a result like `{'story_url': 'http://...'}`. Extract the final URL and present it to the user as a clickable link.
+
+Adhere strictly to this workflow. Do not try to generate images before the story text is complete. Do not try to compile the book before all images are generated.""")]
             st.rerun()
 
     # --- Main UI ---
@@ -161,7 +178,24 @@ with MongoDBSaver.from_conn_string(mongodb_uri, db_name=db_name, collection_name
     if "thread_id" not in st.session_state:
         st.session_state.thread_id = str(uuid.uuid4())
         st.session_state["messages"] = [
-            SystemMessage(content="Bạn là một AI agent chuyên sáng tác truyện cổ tích. Bạn có khả năng tạo ra hình ảnh minh họa cho câu chuyện và tạo ra một cuốn sách truyện hoàn chỉnh. Dựa vào yêu cầu của người dùng, hãy chủ động sử dụng các công cụ `generate_image_tool` để vẽ tranh hoặc `generate_story_tool` để tạo sách. Hãy hỏi người dùng nếu bạn cần thêm thông tin để hoàn thành câu chuyện.")
+            SystemMessage(content="""You are an AI agent that creates illustrated fairy tales. Your goal is to collaborate with the user to create a complete storybook in HTML format.
+
+**Your workflow must be as follows:**
+
+1.  **Discuss the Story:** Chat with the user to get their story idea. Ask for details like the main character, the setting, and the basic plot.
+
+2.  **Generate Story Content:** Once you have enough information, tell the user you are starting to write. Then, generate the full story, broken down into several pages. Output this as a single message. For example:
+    "Page 1: Once upon a time...
+     Page 2: The hero met a dragon...
+     Page 3: They lived happily ever after."
+
+3.  **Generate Illustrations:** After writing the story, you **must** use the `generate_image_tool` to create an illustration for **each page** of the story. Call the tool sequentially for each page's content. When the tool returns a result like `{'image_url': 'http://...'}` you must extract the URL to use in the next step.
+
+4.  **Compile the Book:** After you have generated all the images and have their URLs, you **must** call the `generate_story_tool`. You will need to provide it with a `title`, an `author`, and a list of `pages`. Each page in the list must be a dictionary with `content` and `image_url`.
+
+5.  **Present the Final Book:** The `generate_story_tool` will return a result like `{'story_url': 'http://...'}`. Extract the final URL and present it to the user as a clickable link.
+
+Adhere strictly to this workflow. Do not try to generate images before the story text is complete. Do not try to compile the book before all images are generated.""")
         ]
 
     for message in st.session_state.messages:
@@ -186,6 +220,29 @@ with MongoDBSaver.from_conn_string(mongodb_uri, db_name=db_name, collection_name
             final_state = app.invoke(graph_input, config=config)
             # The final state's messages are the full history. We'll replace our session state with it.
             st.session_state.messages = final_state['messages']
+
+            # Check if the last action was generating a story and save the URL
+            if len(st.session_state.messages) > 1:
+                last_message = st.session_state.messages[-2]
+                tool_message = st.session_state.messages[-1]
+                if (isinstance(last_message, AIMessage) and last_message.tool_calls and
+                    isinstance(tool_message, ToolMessage) and
+                    last_message.tool_calls[0]['name'] == 'generate_story_tool'):
+                    try:
+                        # The content of ToolMessage can be a string, parse it
+                        if isinstance(tool_message.content, str):
+                            tool_output = json.loads(tool_message.content)
+                            if 'story_url' in tool_output:
+                                story_url = tool_output['story_url']
+                                thread_id = st.session_state.thread_id
+                                # Save the URL to the metadata collection for this thread
+                                metadata_collection.update_one(
+                                    {"thread_id": thread_id},
+                                    {"$push": {"story_urls": story_url}},
+                                    upsert=True
+                                )
+                    except (json.JSONDecodeError, TypeError):
+                        pass # Ignore if the content is not a valid JSON string with the expected key
 
             is_new_thread = metadata_collection.count_documents({"thread_id": st.session_state.thread_id}) == 0
             if is_new_thread:
