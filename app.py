@@ -2,13 +2,51 @@ import streamlit as st
 import uuid
 import os
 from typing import List, TypedDict
+import requests
+import json
 
 from dotenv import load_dotenv
 from batch_processor import render_batch_processor
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage, ToolMessage
+from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.checkpoint.mongodb import MongoDBSaver
 from langgraph.graph import StateGraph, END
+from langgraph.prebuilt import ToolNode
+
+# --- API Tools ---
+API_URL = "http://0.0.0.0:8000"
+
+@tool
+def generate_image_tool(query: str):
+    """Generates an image based on a query."""
+    try:
+        response = requests.post(f"{API_URL}/generate-image/", params={"query": query})
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        return f"Error calling generate_image API: {e}"
+
+@tool
+def generate_story_tool(title: str, author: str, pages: List[dict]):
+    """Generates a story book.
+        Args: 
+            title str: tiêu đề truyện
+            author str: tên tác giả
+            pages: class Page(BaseModel):
+                    image_url: str (link ảnh)
+                    content: str (nội dung ảnh)
+    """
+    try:
+        book_data = {"title": title, "author": author, "pages": pages}
+        response = requests.post(f"{API_URL}/generate-story/", json=book_data)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        return f"Error calling generate_story API: {e}"
+
+tools = [generate_image_tool, generate_story_tool]
+
 
 # --- Helper Functions ---
 
@@ -34,8 +72,9 @@ def generate_title(llm, messages: List[BaseMessage]) -> str:
 # Load environment variables
 load_dotenv()
 
-# Set up the language model
+# Set up the language model and bind tools
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.7)
+llm_with_tools = llm.bind_tools(tools)
 
 # Define the state for our graph
 class AgentState(TypedDict):
@@ -44,14 +83,40 @@ class AgentState(TypedDict):
 # Define the nodes for our graph
 def call_model(state: AgentState):
     messages = state["messages"]
-    response = llm.invoke(messages)
+    response = llm_with_tools.invoke(messages)
     return {"messages": messages + [response]}
+
+def should_continue(state: AgentState):
+    last_message = state["messages"][-1]
+    if isinstance(last_message, AIMessage) and last_message.tool_calls:
+        return "continue"
+    return "end"
 
 # Define the graph
 workflow = StateGraph(AgentState)
+
+# A wrapper for the tool node to ensure we append the tool output correctly
+def tool_node_wrapper(state: AgentState) -> dict:
+    tool_node = ToolNode(tools)
+    result = tool_node.invoke(state)
+    # LangGraph's ToolNode returns a list of ToolMessages, we'll append them
+    return {"messages": state["messages"] + result['messages']}
+
+
 workflow.add_node("agent", call_model)
+workflow.add_node("tools", tool_node_wrapper)
+
 workflow.set_entry_point("agent")
-workflow.add_edge("agent", END)
+
+workflow.add_conditional_edges(
+    "agent",
+    should_continue,
+    {
+        "continue": "tools",
+        "end": END,
+    },
+)
+workflow.add_edge("tools", "agent")
 
 # Set up the checkpoint saver
 mongodb_uri = os.getenv("MONGODB_URI")
@@ -83,7 +148,24 @@ with MongoDBSaver.from_conn_string(mongodb_uri, db_name=db_name, collection_name
             if checkpoint_tuple:
                 st.session_state.messages = checkpoint_tuple.checkpoint['channel_values']['messages']
             else:
-                st.session_state.messages = [SystemMessage(content="Bạn là một người kể chuyện cổ tích AI.")]
+                st.session_state.messages = [SystemMessage(content="""You are an AI agent that creates illustrated fairy tales. Your goal is to collaborate with the user to create a complete storybook in HTML format.
+
+**Your workflow must be as follows:**
+
+1.  **Discuss the Story:** Chat with the user to get their story idea. Ask for details like the main character, the setting, and the basic plot.
+
+2.  **Generate Story Content:** Once you have enough information, tell the user you are starting to write. Then, generate the full story, broken down into several pages. Output this as a single message. For example:
+    "Page 1: Once upon a time...
+     Page 2: The hero met a dragon...
+     Page 3: They lived happily ever after."
+
+3.  **Generate Illustrations:** After writing the story, you **must** use the `generate_image_tool` to create an illustration for **each page** of the story. Call the tool sequentially for each page's content. When the tool returns a result like `{'image_url': 'http://...'}` you must extract the URL to use in the next step.
+
+4.  **Compile the Book:** After you have generated all the images and have their URLs, you **must** call the `generate_story_tool`. You will need to provide it with a `title`, an `author`, and a list of `pages`. Each page in the list must be a dictionary with `content` and `image_url`.
+
+5.  **Present the Final Book:** The `generate_story_tool` will return a result like `{'story_url': 'http://...'}`. Extract the final URL and present it to the user as a clickable link.
+
+Adhere strictly to this workflow. Do not try to generate images before the story text is complete. Do not try to compile the book before all images are generated.""")]
             st.rerun()
 
     # --- Main UI ---
@@ -96,13 +178,34 @@ with MongoDBSaver.from_conn_string(mongodb_uri, db_name=db_name, collection_name
     if "thread_id" not in st.session_state:
         st.session_state.thread_id = str(uuid.uuid4())
         st.session_state["messages"] = [
-            SystemMessage(content="Bạn là một người kể chuyện cổ tích AI. Hãy bắt đầu một câu chuyện và tương tác với người dùng.")
+            SystemMessage(content="""You are an AI agent that creates illustrated fairy tales. Your goal is to collaborate with the user to create a complete storybook in HTML format.
+
+**Your workflow must be as follows:**
+
+1.  **Discuss the Story:** Chat with the user to get their story idea. Ask for details like the main character, the setting, and the basic plot.
+
+2.  **Generate Story Content:** Once you have enough information, tell the user you are starting to write. Then, generate the full story, broken down into several pages. Output this as a single message. For example:
+    "Page 1: Once upon a time...
+     Page 2: The hero met a dragon...
+     Page 3: They lived happily ever after."
+
+3.  **Generate Illustrations:** After writing the story, you **must** use the `generate_image_tool` to create an illustration for **each page** of the story. Call the tool sequentially for each page's content. When the tool returns a result like `{'image_url': 'http://...'}` you must extract the URL to use in the next step.
+
+4.  **Compile the Book:** After you have generated all the images and have their URLs, you **must** call the `generate_story_tool`. You will need to provide it with a `title`, an `author`, and a list of `pages`. Each page in the list must be a dictionary with `content` and `image_url`.
+
+5.  **Present the Final Book:** The `generate_story_tool` will return a result like `{'story_url': 'http://...'}`. Extract the final URL and present it to the user as a clickable link.
+
+Adhere strictly to this workflow. Do not try to generate images before the story text is complete. Do not try to compile the book before all images are generated.""")
         ]
 
     for message in st.session_state.messages:
         if isinstance(message, (HumanMessage, AIMessage)):
             with st.chat_message(message.type):
                 st.markdown(message.content)
+        elif isinstance(message, ToolMessage):
+            with st.chat_message("tool"):
+                st.markdown(f"Tool Output: {message.content}")
+
 
     if prompt := st.chat_input("Bạn muốn nghe chuyện gì?"):
         st.session_state.messages.append(HumanMessage(content=prompt))
@@ -113,9 +216,33 @@ with MongoDBSaver.from_conn_string(mongodb_uri, db_name=db_name, collection_name
         graph_input = {"messages": st.session_state.messages}
 
         with st.spinner("AI đang suy nghĩ..."):
-            final_state = app.invoke(graph_input, config=config) # type: ignore
-            ai_response = final_state["messages"][-1]
-            st.session_state.messages.append(ai_response)
+            # Invoke the graph
+            final_state = app.invoke(graph_input, config=config)
+            # The final state's messages are the full history. We'll replace our session state with it.
+            st.session_state.messages = final_state['messages']
+
+            # Check if the last action was generating a story and save the URL
+            if len(st.session_state.messages) > 1:
+                last_message = st.session_state.messages[-2]
+                tool_message = st.session_state.messages[-1]
+                if (isinstance(last_message, AIMessage) and last_message.tool_calls and
+                    isinstance(tool_message, ToolMessage) and
+                    last_message.tool_calls[0]['name'] == 'generate_story_tool'):
+                    try:
+                        # The content of ToolMessage can be a string, parse it
+                        if isinstance(tool_message.content, str):
+                            tool_output = json.loads(tool_message.content)
+                            if 'story_url' in tool_output:
+                                story_url = tool_output['story_url']
+                                thread_id = st.session_state.thread_id
+                                # Save the URL to the metadata collection for this thread
+                                metadata_collection.update_one(
+                                    {"thread_id": thread_id},
+                                    {"$push": {"story_urls": story_url}},
+                                    upsert=True
+                                )
+                    except (json.JSONDecodeError, TypeError):
+                        pass # Ignore if the content is not a valid JSON string with the expected key
 
             is_new_thread = metadata_collection.count_documents({"thread_id": st.session_state.thread_id}) == 0
             if is_new_thread:
