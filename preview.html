@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Interactive Flipbook Reader</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    body {
+      background: #f9fafb;
+    }
+    .book {
+      perspective: 2000px;
+      position: relative;
+      width: 100%;
+      height: 80vh;
+      max-width: 900px;
+      margin: 0 auto;
+    }
+    .page {
+      width: 100%;
+      height: 100%;
+      position: absolute;
+      top: 0;
+      left: 0;
+      background: white;
+      transform-origin: left center;
+      transform-style: preserve-3d;
+      transition: transform 1s ease;
+      box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+    }
+    .page .front, .page .back {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      backface-visibility: hidden;
+    }
+    .page .back {
+      transform: rotateY(180deg);
+      background: #f3f4f6;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.5rem;
+      color: #4b5563;
+    }
+    .page.flipped {
+      transform: rotateY(-180deg);
+      z-index: 0;
+    }
+    .page-text {
+      overflow-y: auto;
+    }
+    .page-text::-webkit-scrollbar {
+      width: 6px;
+    }
+    .page-text::-webkit-scrollbar-thumb {
+      background: #888;
+      border-radius: 3px;
+    }
+    .page-text::-webkit-scrollbar-thumb:hover {
+      background: #555;
+    }
+  </style>
+</head>
+<body class="min-h-screen py-10">
+  <div class="container mx-auto px-4">
+    <h1 class="text-3xl font-bold text-center mb-8 text-indigo-800">Interactive Flipbook Reader</h1>
+
+    <div class="book-container book"></div>
+
+    <div class="flex justify-center mt-6">
+      <button id="prev-btn" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-6 rounded-l-lg disabled:opacity-50" disabled>
+        Previous
+      </button>
+      <span id="page-indicator" class="bg-gray-200 px-4 py-2 font-medium">
+        Cover
+      </span>
+      <button id="next-btn" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-6 rounded-r-lg">
+        Next
+      </button>
+    </div>
+  </div>
+
+  <script>
+    // Sample book data
+    const bookData = {
+      "title": "The Adventure Book",
+      "author": "John Storyteller",
+      "pages": [
+        {
+          "image_url": "https://images.unsplash.com/photo-1544947950-fa07a98d237f?ixlib=rb-1.2.1&auto=format&fit=crop&w=800&q=80",
+          "content": ""
+        },
+        {
+          "image_url": "https://images.unsplash.com/photo-1589998059171-988d322dfe03?ixlib=rb-1.2.1&auto=format&fit=crop&w=800&q=80",
+          "content": "# Chapter 1: The Beginning\n\nOnce upon a time in a land far away, there was a small village nestled between towering mountains and a vast, mysterious forest..."
+        },
+        {
+          "image_url": "https://images.unsplash.com/photo-1508804185872-d7badad00f7d?ixlib=rb-1.2.1&auto=format&fit=crop&w=800&q=80",
+          "content": "## The Journey Begins\n\nOur protagonist, a young farmer named Eli, discovered an ancient map hidden in the thatched roof of his barn..."
+        },
+        {
+          "image_url": "https://images.unsplash.com/photo-1518655048521-f130df041f66?ixlib=rb-1.2.1&auto=format&fit=crop&w=800&q=80",
+          "content": "# Chapter 2: The Forbidden Forest\n\nThe forest was darker than Eli had imagined. Ancient trees with gnarled branches formed a canopy so thick..."
+        },
+        {
+          "image_url": "https://images.unsplash.com/photo-1470114716159-e389f8712fda?ixlib=rb-1.2.1&auto=format&fit=crop&w=800&q=80",
+          "content": "## The Cave of Wonders\n\nAfter three days of travel, they reached the cave entrance, marked by two massive stone statues..."
+        }
+      ]
+    };
+
+    document.addEventListener('DOMContentLoaded', function () {
+      const bookContainer = document.querySelector('.book-container');
+      const prevBtn = document.getElementById('prev-btn');
+      const nextBtn = document.getElementById('next-btn');
+      const pageIndicator = document.getElementById('page-indicator');
+
+      let currentPage = 0;
+      let pages = [];
+
+      function createPages() {
+        bookData.pages.forEach((pageData, index) => {
+          const page = document.createElement('div');
+          page.className = "page";
+          page.style.zIndex = bookData.pages.length - index;
+
+          // Front
+          const front = document.createElement('div');
+          front.className = "front p-6 overflow-y-auto";
+          if (index === 0) {
+            front.innerHTML = `
+              <div class="flex flex-col items-center justify-center h-full text-center">
+                <h2 class="text-4xl font-bold mb-4 text-indigo-900">${bookData.title}</h2>
+                <p class="text-xl text-gray-600 mb-6">by ${bookData.author}</p>
+                <div class="w-48 h-64 bg-cover bg-center rounded-lg shadow-lg" style="background-image:url('${pageData.image_url}')"></div>
+                <p class="mt-6 text-gray-500">Click "Next" to begin reading</p>
+              </div>`;
+          } else {
+            front.innerHTML = `
+              <div class="page-content h-full flex flex-col md:flex-row">
+                <div class="page-image flex-1" style="background-image:url('${pageData.image_url}'); background-size:cover; background-position:center"></div>
+                <div class="page-text flex-1 p-4 overflow-y-auto">${marked.parse(pageData.content)}</div>
+              </div>`;
+          }
+
+          // Back
+          const back = document.createElement('div');
+          back.className = "back";
+          back.innerText = "Back of Page " + index;
+
+          page.appendChild(front);
+          page.appendChild(back);
+
+          bookContainer.appendChild(page);
+          pages.push(page);
+        });
+      }
+
+      function goToPage(pageIndex) {
+        if (pageIndex < 0 || pageIndex >= pages.length) return;
+
+        if (pageIndex > currentPage) {
+          pages[currentPage].classList.add("flipped");
+        } else {
+          pages[pageIndex].classList.remove("flipped");
+        }
+
+        currentPage = pageIndex;
+        prevBtn.disabled = currentPage === 0;
+        nextBtn.disabled = currentPage === pages.length - 1;
+        pageIndicator.textContent = currentPage === 0 ? "Cover" : `Page ${currentPage}`;
+      }
+
+      function goToPrevPage() {
+        if (currentPage > 0) goToPage(currentPage - 1);
+      }
+      function goToNextPage() {
+        if (currentPage < pages.length - 1) goToPage(currentPage + 1);
+      }
+
+      createPages();
+      prevBtn.addEventListener("click", goToPrevPage);
+      nextBtn.addEventListener("click", goToNextPage);
+
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "ArrowLeft") goToPrevPage();
+        if (e.key === "ArrowRight") goToNextPage();
+      });
+    });
+  </script>
+</body>
+</html>
