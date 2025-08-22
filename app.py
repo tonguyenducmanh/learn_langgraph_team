@@ -169,7 +169,9 @@ with MongoDBSaver.from_conn_string(mongodb_uri, db_name=db_name, collection_name
 
 5.  **Present the Final Book:** The `generate_story_tool` will return a result like `{'story_url': 'http://...'}`. Extract the final URL and present it to the user as a clickable link.
 
-Adhere strictly to this workflow. Do not try to generate images before the story text is complete. Do not try to compile the book before all images are generated.""")]
+Adhere strictly to this workflow. Do not try to generate images before the story text is complete. Do not try to compile the book before all images are generated.
+
+**Always reply in Vietnamese.**""")]
             st.rerun()
 
     # --- Main UI ---
@@ -220,16 +222,40 @@ Adhere strictly to this workflow. Do not try to generate images before the story
 
 5.  **Present the Final Book:** The `generate_story_tool` will return a result like `{'story_url': 'http://...'}`. Extract the final URL and present it to the user as a clickable link.
 
-Adhere strictly to this workflow. Do not try to generate images before the story text is complete. Do not try to compile the book before all images are generated.""")
+Adhere strictly to this workflow. Do not try to generate images before the story text is complete. Do not try to compile the book before all images are generated.
+
+**Always reply in Vietnamese.**""")
         ]
 
+    # Create a map of tool_call_id to tool name for display purposes
+    tool_calls_display_map = {}
+    for msg in st.session_state.messages:
+        if isinstance(msg, AIMessage) and msg.tool_calls:
+            for tc in msg.tool_calls:
+                tool_calls_display_map[tc['id']] = tc['name']
+
+    # Display messages, customizing the output for tool calls
     for message in st.session_state.messages:
-        if isinstance(message, (HumanMessage, AIMessage)):
+        if isinstance(message, AIMessage):
+            # Only display AIMessages with content for the user, not tool calls
+            if message.content:
+                with st.chat_message(message.type):
+                    st.markdown(message.content)
+        elif isinstance(message, HumanMessage):
             with st.chat_message(message.type):
                 st.markdown(message.content)
         elif isinstance(message, ToolMessage):
+            tool_name = tool_calls_display_map.get(message.tool_call_id)
+            display_message = ""
+            if tool_name == "generate_image_tool":
+                display_message = "✅ Đã tạo hình minh họa xong."
+            elif tool_name == "generate_story_tool":
+                display_message = "✅ Đã tạo và lưu truyện thành công!"
+            else:
+                display_message = f"✅ Tác vụ `{tool_name}` đã hoàn thành."
+            
             with st.chat_message("tool"):
-                st.markdown(f"Tool Output: {message.content}")
+                st.markdown(display_message)
 
 
     if prompt := st.chat_input("Bạn muốn nghe chuyện gì?"):
