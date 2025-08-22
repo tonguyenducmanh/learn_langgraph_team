@@ -1,0 +1,4 @@
+pymongo
+langgraph
+langgraph-checkpoint-mongodb
+streamlit
