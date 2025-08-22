@@ -133,6 +133,7 @@ with MongoDBSaver.from_conn_string(mongodb_uri, db_name=db_name, collection_name
     # Get the pymongo database object to manage metadata
     db = memory.client[db_name]
     metadata_collection = db["chat_metadata"]
+    stories_collection = db["stories"]
 
     # --- Sidebar for Chat History ---
     st.sidebar.title("Lịch sử trò chuyện")
@@ -159,14 +160,28 @@ with MongoDBSaver.from_conn_string(mongodb_uri, db_name=db_name, collection_name
      Page 2: The hero met a dragon...
      Page 3: They lived happily ever after."
 
-3.  **Generate Illustrations:** After writing the story, you **must** use the `generate_image_tool` to create an illustration for **each page** of the story. Call the tool sequentially for each page's content. When the tool returns a result like `{'image_url': 'http://...'}` you must extract the URL to use in the next step.
+3.  **Generate Illustrations:** After writing the story, you **must** use the `generate_image_tool` to create an illustration for **each page**. To ensure visual consistency, every call to this tool **must** include a description of the main characters and a consistent art style in the query. For example: "A brave knight with a silver shield and a red plume on his helmet, facing a green dragon. Whimsical watercolor style." When the tool returns a result like `{'image_url': 'http://...'}` you must extract the URL for the next step.
 
-4.  **Compile the Book:** After you have generated all the images and have their URLs, you **must** call the `generate_story_tool`. You will need to provide it with a `title`, an `author`, and a list of `pages`. Each page in the list must be a dictionary with `content` and `image_url`.
+4.  **Compile the Book:** After you have generated all the images and have their URLs, you **must** call the `generate_story_tool`.
+    -   **`title`**: Generate a short, suitable title for the story based on its content.
+    -   **`author`**: You **must** use the value "AI Agent".
+    -   **`pages`**: Provide the list of pages, where each page is a dictionary with `content` and `image_url`.
 
 5.  **Present the Final Book:** The `generate_story_tool` will return a result like `{'story_url': 'http://...'}`. Extract the final URL and present it to the user as a clickable link.
 
 Adhere strictly to this workflow. Do not try to generate images before the story text is complete. Do not try to compile the book before all images are generated.""")]
             st.rerun()
+
+    # Display created stories for the current thread
+    if "thread_id" in st.session_state:
+        stories = list(stories_collection.find({"thread_id": st.session_state.thread_id}))
+        if stories:
+            st.sidebar.markdown("---")
+            st.sidebar.subheader("Truyện đã tạo")
+            for story in stories:
+                title = story.get('title', f"Truyện #{str(story['_id'])}")
+                st.sidebar.markdown(f"- [{title}]({story['story_url']})")
+
 
     # --- Main UI ---
     st.title("AI Agent Kể Chuyện Cổ Tích")
@@ -189,9 +204,12 @@ Adhere strictly to this workflow. Do not try to generate images before the story
      Page 2: The hero met a dragon...
      Page 3: They lived happily ever after."
 
-3.  **Generate Illustrations:** After writing the story, you **must** use the `generate_image_tool` to create an illustration for **each page** of the story. Call the tool sequentially for each page's content. When the tool returns a result like `{'image_url': 'http://...'}` you must extract the URL to use in the next step.
+3.  **Generate Illustrations:** After writing the story, you **must** use the `generate_image_tool` to create an illustration for **each page**. To ensure visual consistency, every call to this tool **must** include a description of the main characters and a consistent art style in the query. For example: "A brave knight with a silver shield and a red plume on his helmet, facing a green dragon. Whimsical watercolor style." When the tool returns a result like `{'image_url': 'http://...'}` you must extract the URL for the next step.
 
-4.  **Compile the Book:** After you have generated all the images and have their URLs, you **must** call the `generate_story_tool`. You will need to provide it with a `title`, an `author`, and a list of `pages`. Each page in the list must be a dictionary with `content` and `image_url`.
+4.  **Compile the Book:** After you have generated all the images and have their URLs, you **must** call the `generate_story_tool`.
+    -   **`title`**: Generate a short, suitable title for the story based on its content.
+    -   **`author`**: You **must** use the value "AI Agent".
+    -   **`pages`**: Provide the list of pages, where each page is a dictionary with `content` and `image_url`.
 
 5.  **Present the Final Book:** The `generate_story_tool` will return a result like `{'story_url': 'http://...'}`. Extract the final URL and present it to the user as a clickable link.
 
@@ -221,6 +239,12 @@ Adhere strictly to this workflow. Do not try to generate images before the story
             # The final state's messages are the full history. We'll replace our session state with it.
             st.session_state.messages = final_state['messages']
 
+            thread_id = st.session_state.thread_id
+            # Ensure thread exists in metadata with a title
+            if metadata_collection.count_documents({"thread_id": thread_id}) == 0:
+                title = generate_title(llm, st.session_state.messages)
+                metadata_collection.insert_one({"thread_id": thread_id, "title": title})
+
             # Check if the last action was generating a story and save the URL
             if len(st.session_state.messages) > 1:
                 last_message = st.session_state.messages[-2]
@@ -234,18 +258,15 @@ Adhere strictly to this workflow. Do not try to generate images before the story
                             tool_output = json.loads(tool_message.content)
                             if 'story_url' in tool_output:
                                 story_url = tool_output['story_url']
-                                thread_id = st.session_state.thread_id
-                                # Save the URL to the metadata collection for this thread
-                                metadata_collection.update_one(
-                                    {"thread_id": thread_id},
-                                    {"$push": {"story_urls": story_url}},
-                                    upsert=True
-                                )
+                                tool_call_args = last_message.tool_calls[0]['args']
+                                story_title = tool_call_args.get('title', 'Truyện không có tiêu đề')
+                                
+                                # Save the story to the new 'stories' collection
+                                stories_collection.insert_one({
+                                    "thread_id": thread_id,
+                                    "title": story_title,
+                                    "story_url": story_url
+                                })
                     except (json.JSONDecodeError, TypeError):
                         pass # Ignore if the content is not a valid JSON string with the expected key
-
-            is_new_thread = metadata_collection.count_documents({"thread_id": st.session_state.thread_id}) == 0
-            if is_new_thread:
-                title = generate_title(llm, st.session_state.messages)
-                metadata_collection.insert_one({"thread_id": st.session_state.thread_id, "title": title})
         st.rerun()
