@@ -1,19 +1,23 @@
 import streamlit as st
-from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.mongodb import MongoDBSaver
+import uuid
+import os
+from typing import List, TypedDict
+
+from dotenv import load_dotenv
+from batch_processor import render_batch_processor
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
-from dotenv import load_dotenv
-from typing import List, TypedDict
-import os
-import uuid
+from langgraph.checkpoint.mongodb import MongoDBSaver
+from langgraph.graph import StateGraph, END
 
 # --- Helper Functions ---
 
 def generate_title(llm, messages: List[BaseMessage]) -> str:
     """Generates a title for a conversation using the LLM."""
-    # Format the conversation for the prompt
-    conversation_text = "\n".join([f"{msg.type}: {msg.content}" for msg in messages])
+    conversation_text = "\n".join([f"{msg.type}: {msg.content}" for msg in messages if isinstance(msg, (HumanMessage, AIMessage))])
+    if not conversation_text:
+        return "Cuộc trò chuyện mới"
+    
     prompt = (
         "Hãy tạo một tiêu đề ngắn gọn (dưới 10 từ) tóm tắt nội dung cuộc trò chuyện sau. "
         "Chỉ trả về nội dung tiêu đề, không thêm bất kỳ lời giải thích nào.\n\n"
@@ -71,37 +75,35 @@ with MongoDBSaver.from_conn_string(mongodb_uri, db_name=db_name, collection_name
         st.session_state.clear()
         st.rerun()
 
-    # Display list of past conversations
     threads = list(metadata_collection.find({}, sort=[("_id", -1)]))
     for thread in threads:
         if st.sidebar.button(thread['title'], key=thread['thread_id'], use_container_width=True):
             st.session_state.thread_id = thread['thread_id']
-            # Load the history for the selected thread
             checkpoint_tuple = memory.get_tuple({"configurable": {"thread_id": thread['thread_id']}})
             if checkpoint_tuple:
                 st.session_state.messages = checkpoint_tuple.checkpoint['channel_values']['messages']
             else:
-                # Fallback for empty thread
                 st.session_state.messages = [SystemMessage(content="Bạn là một người kể chuyện cổ tích AI.")]
             st.rerun()
 
-    # --- Main Chat UI ---
+    # --- Main UI ---
     st.title("AI Agent Kể Chuyện Cổ Tích")
 
-    # Initialize session state if it's a new session
+    # Render the batch processing UI from the separate module
+    render_batch_processor(llm)
+
+    # --- Interactive Chat UI ---
     if "thread_id" not in st.session_state:
         st.session_state.thread_id = str(uuid.uuid4())
         st.session_state["messages"] = [
             SystemMessage(content="Bạn là một người kể chuyện cổ tích AI. Hãy bắt đầu một câu chuyện và tương tác với người dùng.")
         ]
 
-    # Display chat messages
     for message in st.session_state.messages:
         if isinstance(message, (HumanMessage, AIMessage)):
             with st.chat_message(message.type):
                 st.markdown(message.content)
 
-    # React to user input
     if prompt := st.chat_input("Bạn muốn nghe chuyện gì?"):
         st.session_state.messages.append(HumanMessage(content=prompt))
         with st.chat_message("human"):
@@ -111,15 +113,12 @@ with MongoDBSaver.from_conn_string(mongodb_uri, db_name=db_name, collection_name
         graph_input = {"messages": st.session_state.messages}
 
         with st.spinner("AI đang suy nghĩ..."):
-            # Invoke the graph
             final_state = app.invoke(graph_input, config=config) # type: ignore
             ai_response = final_state["messages"][-1]
             st.session_state.messages.append(ai_response)
 
-            # Check if a title needs to be generated (first user interaction)
             is_new_thread = metadata_collection.count_documents({"thread_id": st.session_state.thread_id}) == 0
             if is_new_thread:
                 title = generate_title(llm, st.session_state.messages)
                 metadata_collection.insert_one({"thread_id": st.session_state.thread_id, "title": title})
-
         st.rerun()
