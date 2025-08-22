@@ -172,22 +172,29 @@ with MongoDBSaver.from_conn_string(mongodb_uri, db_name=db_name, collection_name
 Adhere strictly to this workflow. Do not try to generate images before the story text is complete. Do not try to compile the book before all images are generated.""")]
             st.rerun()
 
-    # Display created stories for the current thread
-    if "thread_id" in st.session_state:
-        stories = list(stories_collection.find({"thread_id": st.session_state.thread_id}))
-        if stories:
-            st.sidebar.markdown("---")
-            st.sidebar.subheader("Truyện đã tạo")
-            for story in stories:
-                title = story.get('title', f"Truyện #{str(story['_id'])}")
-                st.sidebar.markdown(f"- [{title}]({story['story_url']})")
-
-
     # --- Main UI ---
     st.title("AI Agent Kể Chuyện Cổ Tích")
 
     # Render the batch processing UI from the separate module
     render_batch_processor(llm)
+
+    # --- Display Created Stories ---
+    if "thread_id" in st.session_state:
+        st.markdown("---")
+        st.subheader("📚 Truyện đã tạo trong cuộc trò chuyện này")
+        stories = list(stories_collection.find({"thread_id": st.session_state.thread_id}))
+        if not stories:
+            st.info("Chưa có truyện nào được tạo. Hãy bắt đầu trò chuyện với AI để tạo một câu chuyện!")
+        else:
+            # Create columns for a grid-like layout
+            cols = st.columns(3)
+            for i, story in enumerate(stories):
+                with cols[i % 3]:
+                    with st.container(border=True):
+                        title = story.get('title', 'Truyện không có tiêu đề')
+                        st.markdown(f"##### {title}")
+                        st.link_button("Mở truyện", story.get('story_url', '#'))
+        st.markdown("---")
 
     # --- Interactive Chat UI ---
     if "thread_id" not in st.session_state:
@@ -245,28 +252,41 @@ Adhere strictly to this workflow. Do not try to generate images before the story
                 title = generate_title(llm, st.session_state.messages)
                 metadata_collection.insert_one({"thread_id": thread_id, "title": title})
 
-            # Check if the last action was generating a story and save the URL
-            if len(st.session_state.messages) > 1:
-                last_message = st.session_state.messages[-2]
-                tool_message = st.session_state.messages[-1]
-                if (isinstance(last_message, AIMessage) and last_message.tool_calls and
-                    isinstance(tool_message, ToolMessage) and
-                    last_message.tool_calls[0]['name'] == 'generate_story_tool'):
-                    try:
-                        # The content of ToolMessage can be a string, parse it
-                        if isinstance(tool_message.content, str):
-                            tool_output = json.loads(tool_message.content)
-                            if 'story_url' in tool_output:
+            # Check if a story was generated in the last turn and save the URL
+            new_messages = final_state['messages'][len(graph_input['messages']):]
+
+            # Create a map of tool_call_id to the AIMessage tool_call dict
+            tool_calls_map = {}
+            for msg in new_messages:
+                if isinstance(msg, AIMessage) and msg.tool_calls:
+                    for tc in msg.tool_calls:
+                        tool_calls_map[tc['id']] = tc
+
+            # Find the ToolMessage for the generate_story_tool and save it
+            for msg in new_messages:
+                if isinstance(msg, ToolMessage):
+                    # Find the corresponding tool call
+                    tool_call = tool_calls_map.get(msg.tool_call_id)
+                    if tool_call and tool_call['name'] == 'generate_story_tool':
+                        try:
+                            tool_output = None
+                            if isinstance(msg.content, dict):
+                                tool_output = msg.content
+                            elif isinstance(msg.content, str):
+                                tool_output = json.loads(msg.content)
+
+                            if tool_output and 'story_url' in tool_output:
                                 story_url = tool_output['story_url']
-                                tool_call_args = last_message.tool_calls[0]['args']
-                                story_title = tool_call_args.get('title', 'Truyện không có tiêu đề')
+                                story_title = tool_call['args'].get('title', 'Truyện không có tiêu đề')
                                 
-                                # Save the story to the new 'stories' collection
                                 stories_collection.insert_one({
                                     "thread_id": thread_id,
                                     "title": story_title,
                                     "story_url": story_url
                                 })
-                    except (json.JSONDecodeError, TypeError):
-                        pass # Ignore if the content is not a valid JSON string with the expected key
+                                st.toast("✅ Đã lưu truyện thành công!")
+                                break # Assume only one story is generated per turn
+                        except (json.JSONDecodeError, TypeError, KeyError) as e:
+                            st.error(f"Lỗi khi đang lưu truyện: {e}")
+                            pass # Continue to allow the app to run
         st.rerun()
