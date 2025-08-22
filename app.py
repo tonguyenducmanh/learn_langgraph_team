@@ -133,7 +133,7 @@ with MongoDBSaver.from_conn_string(mongodb_uri, db_name=db_name, collection_name
             if checkpoint_tuple:
                 st.session_state.messages = checkpoint_tuple.checkpoint['channel_values']['messages']
             else:
-                st.session_state.messages = [SystemMessage(content="Bạn là một người kể chuyện cổ tích AI.")]
+                st.session_state.messages = [SystemMessage(content="Bạn là một AI agent chuyên sáng tác truyện cổ tích. Bạn có khả năng tạo ra hình ảnh minh họa cho câu chuyện và tạo ra một cuốn sách truyện hoàn chỉnh. Dựa vào yêu cầu của người dùng, hãy chủ động sử dụng các công cụ `generate_image_tool` để vẽ tranh hoặc `generate_story_tool` để tạo sách. Hãy hỏi người dùng nếu bạn cần thêm thông tin để hoàn thành câu chuyện.")]
             st.rerun()
 
     # --- Main UI ---
@@ -146,7 +146,7 @@ with MongoDBSaver.from_conn_string(mongodb_uri, db_name=db_name, collection_name
     if "thread_id" not in st.session_state:
         st.session_state.thread_id = str(uuid.uuid4())
         st.session_state["messages"] = [
-            SystemMessage(content="Bạn là một người kể chuyện cổ tích AI. Hãy bắt đầu một câu chuyện và tương tác với người dùng.")
+            SystemMessage(content="Bạn là một AI agent chuyên sáng tác truyện cổ tích. Bạn có khả năng tạo ra hình ảnh minh họa cho câu chuyện và tạo ra một cuốn sách truyện hoàn chỉnh. Dựa vào yêu cầu của người dùng, hãy chủ động sử dụng các công cụ `generate_image_tool` để vẽ tranh hoặc `generate_story_tool` để tạo sách. Hãy hỏi người dùng nếu bạn cần thêm thông tin để hoàn thành câu chuyện.")
         ]
 
     for message in st.session_state.messages:
