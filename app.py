@@ -2,13 +2,44 @@ import streamlit as st
 import uuid
 import os
 from typing import List, TypedDict
+import requests
+import json
 
 from dotenv import load_dotenv
 from batch_processor import render_batch_processor
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage, ToolMessage
+from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.checkpoint.mongodb import MongoDBSaver
 from langgraph.graph import StateGraph, END
+from langgraph.prebuilt import ToolNode
+
+# --- API Tools ---
+API_URL = "http://0.0.0.0:8000"
+
+@tool
+def generate_image_tool(query: str):
+    """Generates an image based on a query."""
+    try:
+        response = requests.post(f"{API_URL}/generate-image/", params={"query": query})
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        return f"Error calling generate_image API: {e}"
+
+@tool
+def generate_story_tool(title: str, author: str, pages: List[dict]):
+    """Generates a story book."""
+    try:
+        book_data = {"title": title, "author": author, "pages": pages}
+        response = requests.post(f"{API_URL}/generate-story/", json=book_data)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        return f"Error calling generate_story API: {e}"
+
+tools = [generate_image_tool, generate_story_tool]
+
 
 # --- Helper Functions ---
 
@@ -34,8 +65,9 @@ def generate_title(llm, messages: List[BaseMessage]) -> str:
 # Load environment variables
 load_dotenv()
 
-# Set up the language model
+# Set up the language model and bind tools
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.7)
+llm_with_tools = llm.bind_tools(tools)
 
 # Define the state for our graph
 class AgentState(TypedDict):
@@ -44,14 +76,32 @@ class AgentState(TypedDict):
 # Define the nodes for our graph
 def call_model(state: AgentState):
     messages = state["messages"]
-    response = llm.invoke(messages)
+    response = llm_with_tools.invoke(messages)
     return {"messages": messages + [response]}
+
+def should_continue(state: AgentState):
+    last_message = state["messages"][-1]
+    if isinstance(last_message, AIMessage) and last_message.tool_calls:
+        return "continue"
+    return "end"
 
 # Define the graph
 workflow = StateGraph(AgentState)
+tool_node = ToolNode(tools)
 workflow.add_node("agent", call_model)
+workflow.add_node("tools", tool_node)
+
 workflow.set_entry_point("agent")
-workflow.add_edge("agent", END)
+
+workflow.add_conditional_edges(
+    "agent",
+    should_continue,
+    {
+        "continue": "tools",
+        "end": END,
+    },
+)
+workflow.add_edge("tools", "agent")
 
 # Set up the checkpoint saver
 mongodb_uri = os.getenv("MONGODB_URI")
@@ -103,6 +153,10 @@ with MongoDBSaver.from_conn_string(mongodb_uri, db_name=db_name, collection_name
         if isinstance(message, (HumanMessage, AIMessage)):
             with st.chat_message(message.type):
                 st.markdown(message.content)
+        elif isinstance(message, ToolMessage):
+            with st.chat_message("tool"):
+                st.markdown(f"Tool Output: {message.content}")
+
 
     if prompt := st.chat_input("Bạn muốn nghe chuyện gì?"):
         st.session_state.messages.append(HumanMessage(content=prompt))
@@ -113,9 +167,17 @@ with MongoDBSaver.from_conn_string(mongodb_uri, db_name=db_name, collection_name
         graph_input = {"messages": st.session_state.messages}
 
         with st.spinner("AI đang suy nghĩ..."):
-            final_state = app.invoke(graph_input, config=config) # type: ignore
-            ai_response = final_state["messages"][-1]
-            st.session_state.messages.append(ai_response)
+            # Stream the graph execution
+            for event in app.stream(graph_input, config=config):
+                for key, value in event.items():
+                    if key == "agent":
+                        if value['messages'][-1].tool_calls:
+                            st.session_state.messages.append(value['messages'][-1])
+                        else:
+                             st.session_state.messages.append(value['messages'][-1])
+                    elif key == "tools":
+                        st.session_state.messages.append(value['messages'][-1])
+
 
             is_new_thread = metadata_collection.count_documents({"thread_id": st.session_state.thread_id}) == 0
             if is_new_thread:
