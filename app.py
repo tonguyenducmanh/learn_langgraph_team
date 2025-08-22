@@ -6,6 +6,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from dotenv import load_dotenv
 from typing import List, TypedDict
 import os
+import uuid
 
 # Load environment variables
 load_dotenv()
@@ -65,8 +66,12 @@ with MongoDBSaver.from_conn_string(mongodb_uri, db_name=db_name, collection_name
         with st.chat_message("human"):
             st.markdown(prompt)
 
+        # Initialize a unique thread_id for the session if it doesn't exist
+        if "thread_id" not in st.session_state:
+            st.session_state.thread_id = str(uuid.uuid4())
+
         # Define a unique thread for the conversation
-        config = {"configurable": {"thread_id": "user-123"}}
+        config = {"configurable": {"thread_id": st.session_state.thread_id}}
 
         # Prepare the input for the graph
         graph_input = {"messages": st.session_state.messages}
