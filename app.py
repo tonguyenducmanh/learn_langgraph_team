@@ -87,9 +87,17 @@ def should_continue(state: AgentState):
 
 # Define the graph
 workflow = StateGraph(AgentState)
-tool_node = ToolNode(tools)
+
+# A wrapper for the tool node to ensure we append the tool output correctly
+def tool_node_wrapper(state: AgentState) -> dict:
+    tool_node = ToolNode(tools)
+    result = tool_node.invoke(state)
+    # LangGraph's ToolNode returns a list of ToolMessages, we'll append them
+    return {"messages": state["messages"] + result['messages']}
+
+
 workflow.add_node("agent", call_model)
-workflow.add_node("tools", tool_node)
+workflow.add_node("tools", tool_node_wrapper)
 
 workflow.set_entry_point("agent")
 
@@ -167,17 +175,10 @@ with MongoDBSaver.from_conn_string(mongodb_uri, db_name=db_name, collection_name
         graph_input = {"messages": st.session_state.messages}
 
         with st.spinner("AI đang suy nghĩ..."):
-            # Stream the graph execution
-            for event in app.stream(graph_input, config=config):
-                for key, value in event.items():
-                    if key == "agent":
-                        if value['messages'][-1].tool_calls:
-                            st.session_state.messages.append(value['messages'][-1])
-                        else:
-                             st.session_state.messages.append(value['messages'][-1])
-                    elif key == "tools":
-                        st.session_state.messages.append(value['messages'][-1])
-
+            # Invoke the graph
+            final_state = app.invoke(graph_input, config=config)
+            # The final state's messages are the full history. We'll replace our session state with it.
+            st.session_state.messages = final_state['messages']
 
             is_new_thread = metadata_collection.count_documents({"thread_id": st.session_state.thread_id}) == 0
             if is_new_thread:
