@@ -1,3 +1,9 @@
+Ứng dụng tạo truyện cổ tích bằng AI Agent dựa trên langraph
+
+![Demo One](imgs/demo_one.png)
+
+![Demo Two](imgs/demo_two.png)
+
 install package python
 
 ```
