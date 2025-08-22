@@ -29,7 +29,14 @@ def generate_image_tool(query: str):
 
 @tool
 def generate_story_tool(title: str, author: str, pages: List[dict]):
-    """Generates a story book."""
+    """Generates a story book.
+        Args: 
+            title str: tiêu đề truyện
+            author str: tên tác giả
+            pages: class Page(BaseModel):
+                    image_url: str (link ảnh)
+                    content: str (nội dung ảnh)
+    """
     try:
         book_data = {"title": title, "author": author, "pages": pages}
         response = requests.post(f"{API_URL}/generate-story/", json=book_data)
